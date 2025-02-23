@@ -92,3 +92,137 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+import os
+import pandas as pd
+import json
+from sklearn.metrics import confusion_matrix, balanced_accuracy_score, f1_score, precision_score, recall_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import GridSearchCV
+
+def load_and_clean(path):
+    df = pd.read_csv(path, compression="zip")
+    df = df.rename(columns = {'default payment next month':'default'})
+    df = df.drop('ID', axis=1)
+    df = df.loc[df["MARRIAGE"] != 0] 
+    df = df.loc[df["EDUCATION"] != 0] 
+    df = df.dropna()
+    df['EDUCATION'] = df['EDUCATION'].map(lambda x: 4 if x>4 else x)
+
+    return df
+
+def make_pipeline():
+
+    categoric_columns = ['SEX','EDUCATION','MARRIAGE']
+
+    preprocessor = ColumnTransformer(transformers=[
+        ('onehot', OneHotEncoder(handle_unknown='ignore'), categoric_columns)],
+                                     remainder='passthrough')
+
+
+    pipeline = Pipeline(
+        steps=[
+            ("preprocessing", preprocessor),
+            ("estimator", RandomForestClassifier())
+        ]
+    )
+
+    return pipeline
+
+def make_grid_search(estimator):
+
+    grid_search = GridSearchCV(
+        estimator=estimator,
+        param_grid = {
+            'estimator__n_estimators': [50,100,200],  # Número de árboles
+            'estimator__max_depth': [None, 10, 20],  # Profundidad máxima del árbol
+            'estimator__min_samples_split': [10],  # Muestras mínimas para dividir un nodo
+            'estimator__min_samples_leaf': [1, 2, 5],  # Muestras mínimas por hoja
+            'estimator__max_features': ['sqrt']
+}, 
+        cv=10,
+        scoring='balanced_accuracy',
+        n_jobs=-1,
+        verbose=2
+    )
+
+    return grid_search
+
+def save_estimator(estimator, path):
+
+    import pickle
+    import gzip
+    import os
+
+    os.makedirs(os.path.dirname(path), exist_ok=True) 
+    with gzip.open(path, "wb") as f:
+        pickle.dump(estimator, f)
+
+def check_estimator(estimator, x, y, dataset):
+
+    y_pred = estimator.predict(x)
+
+    precision = round(precision_score(y, y_pred), 4)
+    balanced_accuracy = round(balanced_accuracy_score(y, y_pred), 4)
+    f1 = round(f1_score(y, y_pred), 4)
+    recall = round(recall_score(y, y_pred), 4)
+
+    metrics = {
+        "type": "metrics",
+        "dataset": dataset,
+        "precision": precision,
+        "balanced_accuracy": balanced_accuracy,
+        "recall": recall,
+        "f1_score": f1
+    }
+    
+    return metrics, y_pred, y
+
+def c_matrix(y_true, y_pred, dataset):
+    cm = confusion_matrix(y_true, y_pred)
+    return {
+        "type": "cm_matrix", "dataset": dataset,
+        "true_0": {"predicted_0": int(cm[0, 0]), "predicted_1": int(cm[0, 1])},
+        "true_1": {"predicted_0": int(cm[1, 0]), "predicted_1": int(cm[1, 1])}
+    }
+    
+os.makedirs("files/output", exist_ok=True)
+
+
+df_train = load_and_clean('files/input/train_data.csv.zip')
+df_test = load_and_clean('files/input/test_data.csv.zip')
+
+x_train = df_train.drop(columns='default')
+y_train = df_train['default']
+
+x_test = df_test.drop(columns='default')
+y_test = df_test['default']
+
+pipeline = make_pipeline()
+
+estimator = make_grid_search(estimator=pipeline)
+
+estimator.fit(x_train, y_train)
+
+metrics_train, y_pred_train, y_train = check_estimator(estimator, x_train, y_train, "train")
+metrics_test, y_pred_test, y_test = check_estimator(estimator, x_test, y_test, "test")
+
+c_train = c_matrix(y_train, y_pred_train, "train")
+c_test = c_matrix(y_test, y_pred_test, "test")
+
+with open("files/output/metrics.json", "w") as file:
+        file.write(json.dumps(metrics_train) + "\n")
+        file.write(json.dumps(metrics_test) + "\n")
+        file.write(json.dumps(c_train) + "\n")
+        file.write(json.dumps(c_test) + "\n")
+
+save_estimator(estimator, "files/models/model.pkl.gz")
+
+
+
+
+
+
+
